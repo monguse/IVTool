@@ -1,9 +1,12 @@
 ﻿Module IVTouch
     Private ivApp As Inventor.Application
     Private pid As Integer
+    Private tbDoc As Inventor.DrawingDocument
+    Private tb1 As Inventor.TitleBlockDefinition
+    Private tb2 As Inventor.TitleBlockDefinition
     'Private ivApp As Inventor.ApprenticeServerComponent
     Private Const BaseVaultPath = "C:\VaultWorkspace"
-    Private Const BaseDWFSavePath = "C:\Projects"
+    Private Const BaseDWFSavePath = "C:\Projects\dwf"
 
     Public Sub LoadIV()
         Dim ivProcesses() As Process
@@ -20,35 +23,84 @@
         Process.GetProcessById(pid).Kill()
     End Sub
 
-    Public Sub ProcessAssembly(ByVal docName As String, ByVal bRec As Boolean, ByVal bTB As Boolean)
-        Dim filePath As String
+    Public Sub ProcessAssembly()
+        Dim drawingPath, filePath As String
+        Dim refDocs As Inventor.DocumentsEnumerator
+        Dim refDrawings As New Collection
+        Dim ivDoc As Inventor.Document
+        Dim count As Integer
 
-        filePath = RecursiveFind(BaseVaultPath, docName + ".iam")
-        If filePath <> "" Then
-            frm_IVTool.Cout("Found document")
-            frm_IVTool.Cout("+ " + My.Computer.FileSystem.GetName(filePath))
+        filePath = frm_IVTool.tb_DocNumber.Text
 
-            'ivApp = New Inventor.ApprenticeServerComponent
-            'ivApp.ApplicationAddIns.ItemById("{0AC6FD95-2F4D-42CE-8BE0-8AEA580399E4}").Activate()
-            ProcessDrawing(filePath, bRec, bTB)
-
-        Else
-            frm_IVTool.Cout("No document found")
+        If Not My.Computer.FileSystem.FileExists(filePath) Then
+            filePath = RecursiveFind(BaseVaultPath, frm_IVTool.tb_DocNumber.Text + ".iam")
+            If filePath = "" Then
+                filePath = RecursiveFind(BaseVaultPath, frm_IVTool.tb_DocNumber.Text + ".ipt")
+            End If
         End If
+
+        If My.Computer.FileSystem.FileExists(filePath) Then
+            frm_IVTool.Cout("Document found!" & vbNewLine)
+            frm_IVTool.Cout("+ " & My.Computer.FileSystem.GetName(filePath) & vbNewLine)
+            frm_IVTool.Cout("Getting children..." & vbNewLine)
+        Else
+            frm_IVTool.Cout("Document " & frm_IVTool.tb_DocNumber.Text & " not found" & vbNewLine)
+        End If
+
+        ivDoc = ivApp.Documents.Open(filePath)
+        refDocs = ivDoc.AllReferencedDocuments
+
+        For Each refDoc As Inventor.Document In refDocs
+            drawingPath = FindDrawing(refDoc.FullFileName)
+            If drawingPath <> "" Then
+                refDrawings.Add(drawingPath)
+            End If
+        Next
+        drawingPath = FindDrawing(filePath)
+        If drawingPath <> "" Then
+            refDrawings.Add(drawingPath)
+        End If
+
+        ivDoc.Close()
+        frm_IVTool.Cout("Found " & refDocs.Count & " child documents" & vbNewLine)
+        frm_IVTool.Cout("Found " & refDrawings.Count & " drawing documents" & vbNewLine)
+        frm_IVTool.Cout("Processing drawings..." + vbNewLine)
+
+        tbDoc = ivApp.Documents.Open("C:\Projects\tbsource.idw")
+        For Each tbdef As Inventor.TitleBlockDefinition In tbDoc.TitleBlockDefinitions
+            Debug.Print(tbdef.Name)
+        Next
+        tb1 = tbDoc.TitleBlockDefinitions.Item("SL_Tblock_Main_Stampable")
+        tb2 = tbDoc.TitleBlockDefinitions.Item("SL_Tblock_2_Stampable")
+        count = 1
+        For Each dwgPath In refDrawings
+            ProcessDrawing(dwgPath, count, refDrawings.Count)
+            count += 1
+        Next
+        count -= 1
+        tbDoc.Close()
+        frm_IVTool.Cout("Converted " & count & " drawings successfully" & vbNewLine)
+        frm_IVTool.Cout("Failed to convert " & refDrawings.Count - count & " drawings")
+
     End Sub
 
-    Private Sub ProcessDrawing(ByVal docPath As String, ByVal bRec As Boolean, ByVal bTB As Boolean)
-        Dim drawingPath As String
+    Private Sub ProcessDrawing(ByVal docPath As String, ByRef count As Integer, ByVal total As Integer)
         Dim oDoc As Inventor.Document
 
-        drawingPath = FindDrawing(docPath)
-        If drawingPath <> "" Then
-            frm_IVTool.Cout("Found drawing")
-            frm_IVTool.Cout("++ " + My.Computer.FileSystem.GetName(drawingPath))
-            oDoc = ivApp.Documents.Open(drawingPath, False)
-            'PublishDWF(oDoc, My.Computer.FileSystem.GetName(drawingPath))
+        Try
+            frm_IVTool.Cout("+[" & count & " of " & total & "] " & My.Computer.FileSystem.GetName(docPath) & "...")
+            oDoc = ivApp.Documents.Open(docPath)
+            If frm_IVTool.cb_ReplaceTB.CheckState Then
+                ReplaceTitleblock(oDoc)
+            End If
+            PublishDWF(oDoc)
             oDoc.Close()
-        End If
+            frm_IVTool.Cout("OK!" & vbNewLine)
+        Catch ex As Exception
+            Debug.Print(ex.Message)
+            frm_IVTool.Cout("FAILED" & vbNewLine)
+            count -= 1
+        End Try
 
     End Sub
 
@@ -62,8 +114,22 @@
 
     End Function
 
-    Private Sub ReplaceTitleblock(docPath As String)
+    Private Sub ReplaceTitleblock(oDoc As Inventor.DrawingDocument)
+        Dim tba, tbb As Inventor.TitleBlockDefinition
 
+        tba = tb1.CopyTo(oDoc)
+        tbb = tb2.CopyTo(oDoc)
+
+        For Each oSheet As Inventor.Sheet In oDoc.Sheets
+            If Not oSheet.TitleBlock Is Nothing Then
+                oSheet.TitleBlock.Delete()
+            End If
+            If oSheet.Name = "Sheet:1" Then
+                oSheet.AddTitleBlock(tba)
+            Else
+                oSheet.AddTitleBlock(tbb)
+            End If
+        Next
     End Sub
 
     Private Function RecursiveFind(ByVal folderPath As String, ByVal fileName As String) As String
@@ -81,7 +147,7 @@
         End If
     End Function
 
-    Private Sub PublishDWF(ByRef oDoc As Inventor.Document, ByVal dwgNum As String)
+    Private Sub PublishDWF(ByRef oDoc As Inventor.Document)
         ' Get the DWF translator Add-In.
         'Dim DWFAddIn As Inventor.TranslatorAddIn
         Dim DWFAddIn As Object
@@ -156,8 +222,6 @@
         Dim oDataMedium As Inventor.DataMedium
         oDataMedium = ivApp.TransientObjects.CreateDataMedium
 
-        Dim voption As Object
-
         ' Check whether the translator has 'SaveCopyAs' options
         If DWFAddIn.HasSaveCopyAsOptions(oDoc, oContext, oOptions) Then
 
@@ -179,8 +243,10 @@
         End If
 
         'Set the destination file name
-        oDataMedium.FileName = BaseDWFSavePath + "\" + dwgNum + ".dwf"
-        'oDataMedium.FileName = fSavePath + ".dwf"
+        oDataMedium.FileName = frm_IVTool.tb_FolderPath.Text + _
+                                "\" + _
+                                My.Computer.FileSystem.GetName(oDoc.FullFileName) + _
+                                ".dwf"
 
         'Publish document.
         Call DWFAddIn.SaveCopyAs(oDoc, oContext, oOptions, oDataMedium)
